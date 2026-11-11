@@ -6,6 +6,10 @@ import { diasEntre, estaEnMora } from "../lib/finance.js";
 const router = Router();
 router.use(authRequired);
 
+// Fecha de referencia fija del examen (2026-11-10) y 5 días de gracia estipulados
+const FECHA_REFERENCIA = new Date("2026-11-10T00:00:00");
+const DIAS_GRACIA = 5;
+
 // Cartera por inmueble (saldos pendientes).
 router.get("/", async (req, res) => {
   const condominioId = condominioDeLaPeticion(req);
@@ -35,16 +39,24 @@ router.get("/edades", async (req, res) => {
     [condominioId]
   );
 
-  const hoy = new Date();
+  const hoy = FECHA_REFERENCIA;
   const buckets = { corriente: 0, d1_30: 0, d31_60: 0, d61_90: 0, mas_90: 0 };
   for (const f of rows) {
     const saldo = Number(f.saldo);
     const d = diasEntre(f.fecha_vencimiento, hoy);
-    if (d <= 0) buckets.corriente += saldo;
-    if (d >= 0 && d <= 30) buckets.d1_30 += saldo;
-    if (d > 30 && d <= 60) buckets.d31_60 += saldo;
-    if (d > 60 && d <= 90) buckets.d61_90 += saldo;
-    if (d > 90) buckets.mas_90 += saldo;
+    
+    // Clasificación excluyente sin duplicidad en d === 0
+    if (d <= 0) {
+      buckets.corriente += saldo;
+    } else if (d > 0 && d <= 30) {
+      buckets.d1_30 += saldo;
+    } else if (d > 30 && d <= 60) {
+      buckets.d31_60 += saldo;
+    } else if (d > 60 && d <= 90) {
+      buckets.d61_90 += saldo;
+    } else if (d > 90) {
+      buckets.mas_90 += saldo;
+    }
   }
   const total = buckets.corriente + buckets.d1_30 + buckets.d31_60 + buckets.d61_90 + buckets.mas_90;
   res.json({ ...buckets, total });
@@ -61,7 +73,8 @@ router.get("/mora", async (req, res) => {
     [condominioId]
   );
 
-  const enMora = rows.filter((f) => estaEnMora(f.fecha_vencimiento));
+  // Aplica fecha de corte (2026-11-10) y 5 días de gracia
+  const enMora = rows.filter((f) => estaEnMora(f.fecha_vencimiento, FECHA_REFERENCIA, DIAS_GRACIA));
   const porInmueble = {};
   for (const f of enMora) {
     if (!porInmueble[f.inmueble_id]) {
