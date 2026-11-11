@@ -10,11 +10,17 @@ export function diasEntre(desde, hasta) {
 
 // Interés de mora sobre un saldo vencido.
 // tasaMensual viene de la copropiedad (ej. 0.02 = 2% mensual).
-export function calcularInteresMora(saldo, diasMora, tasaMensual) {
+// diasGracia: días de tolerancia antes de liquidar mora (ej. 5 días).
+export function calcularInteresMora(saldo, diasMora, tasaMensual, diasGracia = 0) {
   const s = Number(saldo);
   const t = Number(tasaMensual);
-  if (diasMora <= 0 || s <= 0) return 0;
-  const interes = s * t * diasMora;
+  
+  // Si está dentro de los días de gracia o sin saldo/días, no cobra mora
+  if (diasMora <= diasGracia || s <= 0 || t <= 0) return 0;
+  
+  // Tasa diaria proporcional (base comercial 30 días)
+  const tasaDiaria = t / 30;
+  const interes = s * tasaDiaria * diasMora;
   return Math.round(interes);
 }
 
@@ -26,7 +32,8 @@ export function estadoPorSaldo(total, saldo, estadoActual) {
   return "Pendiente";
 }
 
-// ¿La factura está en mora a la fecha indicada?
-export function estaEnMora(fechaVencimiento, hoy = new Date()) {
-  return new Date(fechaVencimiento) < hoy;
+// ¿La factura está en mora a la fecha indicada considerando días de gracia?
+export function estaEnMora(fechaVencimiento, hoy = new Date(), diasGracia = 0) {
+  const dias = diasEntre(fechaVencimiento, hoy);
+  return dias > diasGracia;
 }
