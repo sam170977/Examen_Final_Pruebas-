@@ -20,9 +20,10 @@ router.get("/", async (req, res) => {
        FROM inmueble i
        LEFT JOIN persona p ON p.id = i.propietario_id
        LEFT JOIN persona r ON r.id = i.residente_id
+      WHERE i.condominio_id = $1
       ORDER BY i.id
-      LIMIT $1 OFFSET $2`,
-    [limit, offset]
+      LIMIT $2 OFFSET $3`,
+    [condominioId, limit, offset]
   );
 
   const total = await query("SELECT COUNT(*)::int AS n FROM inmueble WHERE condominio_id = $1", [condominioId]);
