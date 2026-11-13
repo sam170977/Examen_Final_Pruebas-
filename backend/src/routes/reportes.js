@@ -5,7 +5,7 @@ import { authRequired, condominioDeLaPeticion } from "../lib/auth.js";
 const router = Router();
 router.use(authRequired);
 
-// Totales de facturación por periodo.
+// Totales de facturación por periodo (excluyendo facturas anuladas).
 router.get("/totales-facturacion", async (req, res) => {
   const condominioId = condominioDeLaPeticion(req);
   const { rows } = await query(
@@ -13,7 +13,7 @@ router.get("/totales-facturacion", async (req, res) => {
             SUM(total)::numeric AS facturado,
             SUM(saldo)::numeric AS cartera
        FROM factura
-      WHERE condominio_id = $1
+      WHERE condominio_id = $1 AND estado <> 'Anulada'
       GROUP BY periodo
       ORDER BY periodo`,
     [condominioId]
