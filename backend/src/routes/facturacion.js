@@ -5,6 +5,8 @@ import { authRequired, condominioDeLaPeticion, requireRol } from "../lib/auth.js
 const router = Router();
 router.use(authRequired);
 
+const FECHA_EMISION_ESCENARIO = "2026-11-10";
+
 // Fecha de vencimiento: día 10 del mes siguiente al periodo (YYYY-MM).
 function vencimientoDe(periodo) {
   const [y, m] = periodo.split("-").map(Number);
@@ -12,7 +14,7 @@ function vencimientoDe(periodo) {
   return `${siguiente}-10`;
 }
 
-// Listado de facturas de un periodo.
+// Listado de facturas de un periodo (con aislamiento para propietarios).
 router.get("/", async (req, res) => {
   const condominioId = condominioDeLaPeticion(req);
   const periodo = req.query.periodo;
@@ -21,9 +23,16 @@ router.get("/", async (req, res) => {
                     f.fecha_emision, f.fecha_vencimiento, f.total, f.saldo, f.estado
                FROM factura f JOIN inmueble i ON i.id = f.inmueble_id
               WHERE f.condominio_id = $1`;
+
+  // DEF-03: Si el usuario es propietario, solo puede ver las facturas de sus propios inmuebles
+  if (req.user.rol === "propietario") {
+    params.push(req.user.persona_id || req.user.id);
+    sql += ` AND i.propietario_id = $${params.length}`;
+  }
+
   if (periodo) {
     params.push(periodo);
-    sql += ` AND f.periodo = $2`;
+    sql += ` AND f.periodo = $${params.length}`;
   }
   sql += " ORDER BY i.identificacion, f.periodo";
   const { rows } = await query(sql, params);
@@ -39,6 +48,18 @@ router.post(
     const { periodo, concepto_id } = req.body || {};
     if (!periodo || !concepto_id) {
       return res.status(400).json({ error: "periodo y concepto_id son obligatorios" });
+    }
+
+    // Validar que no exista ya facturación generada para este concepto en el mismo periodo
+    const duplicada = await query(
+      `SELECT 1 FROM factura f
+         JOIN factura_detalle fd ON fd.factura_id = f.id
+        WHERE f.condominio_id = $1 AND f.periodo = $2 AND fd.concepto_id = $3 AND f.estado <> 'Anulada'
+        LIMIT 1`,
+      [condominioId, periodo, concepto_id]
+    );
+    if (duplicada.rows.length > 0) {
+      return res.status(409).json({ error: "Ya existe facturación activa para este concepto y periodo" });
     }
 
     const cpt = await query(
@@ -59,15 +80,25 @@ router.post(
     const creadas = [];
     try {
       await client.query("BEGIN");
-      for (const inm of inms.rows) {
-        // Redondeo comercial de la cuota a la centena.
-        const valor = Math.round((totalARepartir * Number(inm.coeficiente)) / 100) * 100;
+      let acumulado = 0;
+
+      for (let idx = 0; idx < inms.rows.length; idx++) {
+        const inm = inms.rows[idx];
+        const esUltimo = idx === inms.rows.length - 1;
+
+        // DEF-04: Evitar descuadre por redondeo; el último inmueble absorbe la diferencia residual de centavos/pesos
+        let valor = Math.round(totalARepartir * Number(inm.coeficiente));
+        if (esUltimo && inms.rows.length > 0) {
+          valor = Math.round(totalARepartir - acumulado);
+        }
+        acumulado += valor;
+
         const f = await client.query(
           `INSERT INTO factura (condominio_id, inmueble_id, periodo, fecha_emision,
                                 fecha_vencimiento, subtotal, total, saldo, estado)
-           VALUES ($1,$2,$3, CURRENT_DATE, $4, $5, $5, $5, 'Pendiente')
+           VALUES ($1, $2, $3, $4, $5, $6, $6, $6, 'Pendiente')
            RETURNING id, inmueble_id, total`,
-          [condominioId, inm.id, periodo, vencimiento, valor]
+          [condominioId, inm.id, periodo, FECHA_EMISION_ESCENARIO, vencimiento, valor]
         );
         await client.query(
           `INSERT INTO factura_detalle (factura_id, concepto_id, descripcion, valor)
@@ -95,14 +126,29 @@ router.post(
   }
 );
 
-// Anular una factura.
+// Anular una factura (solo si no tiene pagos aplicados ni está pagada).
 router.post("/:id/anular", requireRol("admin_copropiedad", "contador", "superadmin"), async (req, res) => {
   const condominioId = condominioDeLaPeticion(req);
+
+  const actual = await query(
+    "SELECT id, estado, total, saldo FROM factura WHERE id = $1 AND condominio_id = $2",
+    [req.params.id, condominioId]
+  );
+  if (!actual.rows[0]) return res.status(404).json({ error: "Factura no encontrada" });
+
+  const factura = actual.rows[0];
+  // DEF-05: Impedir anulación de facturas pagadas o con abonos parciales
+  if (factura.estado === "Pagada" || factura.estado === "Parcialmente pagada" || Number(factura.saldo) < Number(factura.total)) {
+    return res.status(400).json({ error: "No se puede anular una factura que ya tiene pagos o abonos registrados" });
+  }
+  if (factura.estado === "Anulada") {
+    return res.status(400).json({ error: "La factura ya se encuentra anulada" });
+  }
+
   const { rows } = await query(
     "UPDATE factura SET estado = 'Anulada', saldo = 0 WHERE id = $1 AND condominio_id = $2 RETURNING id, estado",
     [req.params.id, condominioId]
   );
-  if (!rows[0]) return res.status(404).json({ error: "Factura no encontrada" });
   res.json(rows[0]);
 });
 
